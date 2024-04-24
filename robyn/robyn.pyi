@@ -7,14 +7,6 @@ from typing import Callable, Optional, Union
 def get_version() -> str:
     pass
 
-def jsonify(input_dict: dict) -> str:
-    """
-    This function serializes input dict to a json string
-
-    Attributes:
-        input_dict dict: response of the function
-    """
-
 class SocketHeld:
     def __init__(self, url: str, port: int):
         pass
@@ -116,7 +108,7 @@ class QueryParams:
         """
         pass
 
-    def get(self, key: str, default: Optional[str]) -> Optional[str]:
+    def get(self, key: str, default: Optional[str] = None) -> Optional[str]:
         """
         Gets the last value of the query parameter with the given key.
 
@@ -254,10 +246,13 @@ class Request:
     Attributes:
         query_params (QueryParams): The query parameters of the request. e.g. /user?id=123 -> {"id": "123"}
         headers Headers: The headers of the request. e.g. Headers({"Content-Type": "application/json"})
-        params (dict[str, str]): The parameters of the request. e.g. /user/:id -> {"id": "123"}
+        path_params (dict[str, str]): The parameters of the request. e.g. /user/:id -> {"id": "123"}
         body (Union[str, bytes]): The body of the request. If the request is a JSON, it will be a dict.
-        method (str): The method of the request. e.g. GET, POST, PUT, DELETE
+        url (Url): The url of the request. e.g. https://localhost/user
+        form_data (dict[str, str]): The form data of the request. e.g. {"name": "John"}
+        files (dict[str, bytes]): The files of the request. e.g. {"file": b"file"}
         ip_addr (Optional[str]): The IP Address of the client
+        identity (Optional[Identity]): The identity of the client
     """
 
     query_params: QueryParams
@@ -266,6 +261,8 @@ class Request:
     body: Union[str, bytes]
     method: str
     url: Url
+    form_data: dict[str, str]
+    files: dict[str, bytes]
     ip_addr: Optional[str]
     identity: Optional[Identity]
 
@@ -284,13 +281,13 @@ class Response:
     Attributes:
         status_code (int): The status code of the response. e.g. 200, 404, 500 etc.
         response_type (Optional[str]): The response type of the response. e.g. text, json, html, file etc.
-        headers (dict[str, str]): The headers of the response. e.g. {"Content-Type": "application/json"}
+        headers (Union[Headers, dict]): The headers of the response or Headers directly. e.g. {"Content-Type": "application/json"}
         description (Union[str, bytes]): The body of the response. If the response is a JSON, it will be a dict.
         file_path (Optional[str]): The file path of the response. e.g. /home/user/file.txt
     """
 
     status_code: int
-    headers: Headers
+    headers: Union[Headers, dict]
     description: Union[str, bytes]
     response_type: Optional[str] = None
     file_path: Optional[str] = None

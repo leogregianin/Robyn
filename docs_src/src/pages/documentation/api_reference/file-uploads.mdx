@@ -6,7 +6,7 @@ export const description =
 Batman learned how to handle file uploads using Robyn. He created an endpoint to handle file uploads using the following code:
 
 
-## Scaling the Application
+## Sending a File without MultiPart Form Data
 
 <Row>
 <Col>
@@ -17,8 +17,6 @@ Batman scaled his application across multiple cores for better performance. He u
     <CodeGroup title="Request" tag="GET" label="/hello_world">
 
     ```python {{ title: 'untyped' }}
-    from robyn.robyn import File
-
     @app.post("/upload")
     async def upload():
       body = request.body
@@ -28,11 +26,9 @@ Batman scaled his application across multiple cores for better performance. He u
       with open('test.txt', 'wb') as f:
           f.write(body)
 
-      return jsonify({'message': 'success'})
+      return {'message': 'success'}
     ```
     ```python {{ title: 'typed' }}
-    from robyn.robyn import File
-
     @app.post("/upload")
     async def upload():
       body = request.body
@@ -42,7 +38,45 @@ Batman scaled his application across multiple cores for better performance. He u
       with open('test.txt', 'wb') as f:
           f.write(file)
 
-      return jsonify({'message': 'success'})
+      return {'message': 'success'}
+    ```
+
+    </CodeGroup>
+  </Col>
+</Row>
+
+
+## Sending a File with MultiPart Form Data
+
+<Row>
+<Col>
+Batman scaled his application across multiple cores for better performance. He used the following command:
+</Col>
+  <Col sticky>
+
+    <CodeGroup title="Request" tag="GET" label="/hello_world">
+
+    ```python {{ title: 'untyped' }}
+    @app.post("/upload")
+    async def upload(request):
+      file = request.files['filename']
+
+      # write whatever filename
+      with open('filename', 'wb') as f:
+          f.write(file)
+
+      return {'message': 'success'}
+    ```
+    ```python {{ title: 'typed' }}
+    @app.post("/upload")
+    async def upload(request: Request):
+      file = request.files['filename']
+
+      # write whatever filename
+      with open('filename', 'wb') as f:
+          f.write(file)
+
+      return {'message': 'success'}
     ```
 
     </CodeGroup>
@@ -109,28 +143,28 @@ Speaking of HTML files, Batman wanted to serve simple HTML strings. He was sugge
     <CodeGroup title="Request" tag="GET" label="/hello_world">
 
     ```python {{ title: 'untyped' }}
-    from robyn import Robyn, serve_html
+    from robyn import Robyn, html
 
     app = Robyn(__file__)
 
 
     @app.get("/")
     async def h(request):
-        return serve_html("./index.html")
+        return html("./index.html")
 
     app.start(port=8080)
 
     ```
 
     ```python {{ title: 'typed' }}
-    from robyn import Robyn, Request, serve_html
+    from robyn import Robyn, Request, html
 
     app = Robyn(__file__)
 
 
     @app.get("/")
     async def h(request: Request):
-        return serve_html("./index.html")
+        return html("./index.html")
 
     app.start(port=8080)
 
@@ -186,9 +220,9 @@ Batman scaled his application across multiple cores for better performance. He u
 
 ## What's next?
 
-Now, Batman was ready to learn about the advanced features of Robyn. He wanted to find a way to get realtime updates in his dashboard.
+Now, Batman was ready to learn about the advanced features of Robyn. He wanted to find a way to handle form data
 
-- [WebSockets](/documentation/api_reference/websockets)
+- [Form Data](/documentation/api_reference/form_data)
 
 
 
