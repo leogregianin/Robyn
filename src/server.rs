@@ -1,4 +1,6 @@
-use crate::executors::{execute_event_handler, execute_http_function, execute_middleware_function};
+use crate::executors::{
+    execute_http_function, execute_middleware_function, execute_startup_handler,
+};
 
 use crate::routers::const_router::ConstRouter;
 use crate::routers::Router;
@@ -18,7 +20,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Relaxed, SeqCst};
 use std::sync::{Arc, RwLock};
 
-use std::process::abort;
+use std::process::exit;
 use std::{env, thread};
 
 use actix_files::Files;
@@ -54,6 +56,7 @@ pub struct Server {
     directories: Arc<RwLock<Vec<Directory>>>,
     startup_handler: Option<Arc<FunctionInfo>>,
     shutdown_handler: Option<Arc<FunctionInfo>>,
+    excluded_response_headers_paths: Option<Vec<String>>,
 }
 
 #[pymethods]
@@ -70,6 +73,7 @@ impl Server {
             directories: Arc::new(RwLock::new(Vec::new())),
             startup_handler: None,
             shutdown_handler: None,
+            excluded_response_headers_paths: None,
         }
     }
 
@@ -106,6 +110,8 @@ impl Server {
         let startup_handler = self.startup_handler.clone();
         let shutdown_handler = self.shutdown_handler.clone();
 
+        let excluded_response_headers_paths = self.excluded_response_headers_paths.clone();
+
         let task_locals = pyo3_asyncio::TaskLocals::new(event_loop).copy_context(py)?;
         let task_locals_copy = task_locals.clone();
 
@@ -122,7 +128,7 @@ impl Server {
         thread::spawn(move || {
             actix_web::rt::System::new().block_on(async move {
                 debug!("The number of workers is {}", workers);
-                execute_event_handler(startup_handler, &task_locals_copy)
+                execute_startup_handler(startup_handler, &task_locals_copy)
                     .await
                     .unwrap();
 
@@ -160,10 +166,11 @@ impl Server {
                         .app_data(web::Data::new(const_router.clone()))
                         .app_data(web::Data::new(middleware_router.clone()))
                         .app_data(web::Data::new(global_request_headers.clone()))
-                        .app_data(web::Data::new(global_response_headers.clone()));
+                        .app_data(web::Data::new(global_response_headers.clone()))
+                        .app_data(web::Data::new(excluded_response_headers_paths.clone()));
 
                     let web_socket_map = web_socket_router.get_web_socket_map();
-                    for (elem, value) in (web_socket_map.read().unwrap()).iter() {
+                    for (elem, value) in (web_socket_map.read()).iter() {
                         let endpoint = elem.clone();
                         let path_params = value.clone();
                         let task_locals = task_locals.clone();
@@ -192,6 +199,7 @@ impl Server {
                                   payload: web::Payload,
                                   global_request_headers,
                                   global_response_headers,
+                                  response_headers_exclude_paths,
                                   req| {
                                 pyo3_asyncio::tokio::scope_local(task_locals.clone(), async move {
                                     index(
@@ -201,6 +209,7 @@ impl Server {
                                         middleware_router,
                                         global_request_headers,
                                         global_response_headers,
+                                        response_headers_exclude_paths,
                                         req,
                                     )
                                     .await
@@ -222,15 +231,41 @@ impl Server {
         let event_loop = (*event_loop).call_method0("run_forever");
         if event_loop.is_err() {
             debug!("Ctrl c handler");
-            Python::with_gil(|py| {
-                pyo3_asyncio::tokio::run(py, async move {
-                    execute_event_handler(shutdown_handler, &task_locals.clone())
-                        .await
-                        .unwrap();
-                    Ok(())
-                })
-            })?;
-            abort();
+
+            // executing this from the same file (and not creating a function -- like startup handler)
+            // to fix an issue that arises when a new async function is spooled up.
+
+            // if we create a function & move the code, the function won't run s & raises the warning:
+            // "unused implementer of `futures_util::Future` that must be used futures do nothing
+            // unless you await or poll them."
+
+            // but, adding `.await` raises the error "await is used inside non-async function,
+            // which is not an async context".
+
+            // which can only be solved by creating a new async function -- hence, resorting
+            // to this solution
+
+            if let Some(function) = shutdown_handler {
+                if function.is_async {
+                    debug!("Shutdown event handler async");
+
+                    pyo3_asyncio::tokio::run_until_complete(
+                        task_locals.event_loop(py),
+                        pyo3_asyncio::into_future_with_locals(
+                            &task_locals.clone(),
+                            function.handler.as_ref(py).call0()?,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                } else {
+                    debug!("Shutdown event handler");
+
+                    Python::with_gil(|py| function.handler.call0(py))?;
+                }
+            }
+
+            exit(0);
         }
         Ok(())
     }
@@ -270,9 +305,34 @@ impl Server {
         self.global_response_headers = Arc::new(headers.clone());
     }
 
+    pub fn set_response_headers_exclude_paths(
+        &mut self,
+        excluded_response_headers_paths: Option<Vec<String>>,
+    ) {
+        self.excluded_response_headers_paths = excluded_response_headers_paths;
+    }
+
     /// Add a new route to the routing tables
     /// can be called after the server has been started
     pub fn add_route(
+        &self,
+        py: Python,
+        route_type: &HttpMethod,
+        route: &str,
+        function: FunctionInfo,
+        is_const: bool,
+    ) {
+        let second_route: String = if route.ends_with('/') {
+            route[0..route.len() - 1].to_string()
+        } else {
+            format!("{}/", route)
+        };
+
+        self._add_route(py, route_type, route, function.clone(), is_const);
+        self._add_route(py, route_type, &second_route, function, is_const);
+    }
+
+    fn _add_route(
         &self,
         py: Python,
         route_type: &HttpMethod,
@@ -363,6 +423,7 @@ impl Default for Server {
 
 /// This is our service handler. It receives a Request, routes on it
 /// path, and returns a Future of a Response.
+#[allow(clippy::too_many_arguments)]
 async fn index(
     router: web::Data<Arc<HttpRouter>>,
     payload: web::Payload,
@@ -370,6 +431,7 @@ async fn index(
     middleware_router: web::Data<Arc<MiddlewareRouter>>,
     global_request_headers: web::Data<Arc<Headers>>,
     global_response_headers: web::Data<Arc<Headers>>,
+    excluded_response_headers_paths: web::Data<Option<Vec<String>>>,
     req: HttpRequest,
 ) -> impl Responder {
     let mut request = Request::from_actix_request(&req, payload, &global_request_headers).await;
@@ -433,6 +495,15 @@ async fn index(
     debug!("OG Response : {:?}", response);
 
     response.headers.extend(&global_response_headers);
+
+    match &excluded_response_headers_paths.get_ref() {
+        None => {}
+        Some(excluded_response_headers_paths) => {
+            if excluded_response_headers_paths.contains(&req.uri().path().to_owned()) {
+                response.headers.clear();
+            }
+        }
+    }
 
     debug!("Extended Response : {:?}", response);
 

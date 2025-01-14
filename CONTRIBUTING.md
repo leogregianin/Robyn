@@ -15,7 +15,7 @@ These are, in general, rules that you should be following while contributing to 
 - Always create a Pull Request from a Branch; Never from the Main.
 - Follow proper code conventions because writing clean code is important.
 - Issues would be assigned on a "First Come, First Served" basis.
-- Do mention (@maintainer) the project maintainer if your PR isn't reviewed within a few days.
+- Do mention (@sansyrox) the project maintainer if your PR isn't reviewed within a few days.
 
 ## First time contributors:
 
@@ -42,7 +42,7 @@ cd robyn
 **4.** Add a reference to the original repository.
 
 ```
-git remote add upstream https://github.com/sansyrox/robyn.git
+git remote add upstream https://github.com/sparckles/robyn.git
 ```
 
 **5.** See latest changes to the repo using
@@ -98,7 +98,7 @@ git push -u origin <YOUR_BRANCH_NAME>
 
 Let's walk through the steps to create an issue:
 
-**1.** On GitHub, navigate to the main page of the repository. [Here](https://github.com/sansyrox/robyn.git) in this case.
+**1.** On GitHub, navigate to the main page of the repository. [Here](https://github.com/sparckles/robyn.git) in this case.
 
 **2.** Under your repository name, click on the `Issues` button.
 <br><br><img src="https://www.stevejgordon.co.uk/wp-content/uploads/2018/01/GitHubIssueTab.png" width="750" /><br>

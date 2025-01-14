@@ -48,6 +48,11 @@ const guides = [
     description: 'Learn about Templating in Robyn.',
   },
   {
+    href: '/documentation/api_reference/redirection',
+    name: 'Redirection',
+    description: 'Learn how to redirect requests to different endpoints.',
+  },
+  {
     href: '/documentation/api_reference/file-uploads',
     name: 'File Uploads',
     description:
@@ -55,7 +60,7 @@ const guides = [
   },
   {
     href: '/documentation/api_reference/form_data',
-    name: 'Form Data',
+    name: 'Form Data and Multi Part Form Data',
     description: 'Learn how to handle form data.',
   },
   {
@@ -64,22 +69,25 @@ const guides = [
     description: 'Learn how to use Websockets in Robyn.',
   },
   {
-    href: '/documentation/api_reference/views',
-    name: 'Code Organisation',
-    description: 'Learn about Views and SubRouters in Robyn.',
-  },
-
-  {
     href: '/documentation/api_reference/exceptions',
     name: 'Exceptions',
     description: 'Learn how to handle exceptions in Robyn.',
+  },
+  {
+    href: '/documentation/api_reference/scaling',
+    name: 'Scaling the Application',
+    description: 'Learn how to scaled Robyn across multiple cores.',
   },
   {
     href: '/documentation/api_reference/advanced_features',
     name: 'Advanced Features',
     description: 'Learn about advanced features in Robyn.',
   },
-
+  {
+    href: '/documentation/api_reference/multiprocess_execution',
+    name: 'Multiprocess Execution',
+    description: 'Learn about the behaviour or variables during multithreading',
+  },
   {
     href: '/documentation/api_reference/using_rust_directly',
     name: 'Direct Rust Usage',
@@ -87,8 +95,14 @@ const guides = [
   },
   {
     href: '/documentation/api_reference/graphql-support',
-    name: 'Advanced Features',
+    name: 'GraphQL Support',
     description: 'Learn about GraphQL Support in Robyn.',
+  },
+  {
+    href: '/documentation/api_reference/openapi',
+    name: 'OpenAPI Documentation',
+    description:
+      'Learn how to generate OpenAPI docs for your applications.',
   },
   {
     href: '/documentation/api_reference/dependency_injection',

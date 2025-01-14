@@ -236,6 +236,10 @@ class Headers:
         pass
 
     def is_empty(self) -> bool:
+        """
+        Returns:
+            True if the headers are empty, False otherwise
+        """
         pass
 
 @dataclass
@@ -248,6 +252,7 @@ class Request:
         headers Headers: The headers of the request. e.g. Headers({"Content-Type": "application/json"})
         path_params (dict[str, str]): The parameters of the request. e.g. /user/:id -> {"id": "123"}
         body (Union[str, bytes]): The body of the request. If the request is a JSON, it will be a dict.
+        method (str): The method of the request. e.g. GET, POST, PUT etc.
         url (Url): The url of the request. e.g. https://localhost/user
         form_data (dict[str, str]): The form data of the request. e.g. {"name": "John"}
         files (dict[str, bytes]): The files of the request. e.g. {"file": b"file"}
@@ -292,7 +297,22 @@ class Response:
     response_type: Optional[str] = None
     file_path: Optional[str] = None
 
+    def set_cookie(self, key: str, value: str) -> None:
+        """
+        Sets the cookie in the response.
+
+        Args:
+            key (str): The key of the cookie
+            value (str): The value of the cookie
+        """
+        pass
+
 class Server:
+    """
+    The Server object used to create a Robyn server.
+
+    This object is used to create a Robyn server and add routes, middlewares, etc.
+    """
     def __init__(self) -> None:
         pass
     def add_directory(
@@ -306,6 +326,8 @@ class Server:
     def apply_request_headers(self, headers: Headers) -> None:
         pass
     def apply_response_headers(self, headers: Headers) -> None:
+        pass
+    def set_response_headers_exclude_paths(self, excluded_response_headers_paths: Optional[list[str]] = None):
         pass
 
     def add_route(
@@ -346,6 +368,7 @@ class WebSocketConnector:
 
     Attributes:
         id (str): The id of the client
+        query_params (QueryParams): The query parameters object
 
         async_broadcast (Callable): The function to broadcast a message to all clients
         async_send_to (Callable): The function to send a message to the client
@@ -354,12 +377,44 @@ class WebSocketConnector:
     """
 
     id: str
+    query_params: QueryParams
 
     async def async_broadcast(self, message: str) -> None:
+        """
+        Broadcasts a message to all clients.
+
+        Args:
+            message (str): The message to broadcast
+        """
         pass
     async def async_send_to(self, sender_id: str, message: str) -> None:
+        """
+        Sends a message to a specific client.
+
+        Args:
+            sender_id (str): The id of the sender
+            message (str): The message to send
+        """
         pass
     def sync_broadcast(self, message: str) -> None:
+        """
+        Broadcasts a message to all clients.
+
+        Args:
+            message (str): The message to broadcast
+        """
         pass
     def sync_send_to(self, sender_id: str, message: str) -> None:
+        """
+        Sends a message to a specific client.
+
+        Args:
+            sender_id (str): The id of the sender
+            message (str): The message to send
+        """
+        pass
+    def close(self) -> None:
+        """
+        Closes the connection.
+        """
         pass

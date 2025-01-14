@@ -1,30 +1,17 @@
 import os
-
 import pathlib
 from collections import defaultdict
 from typing import Optional
 
-from robyn import (
-    Request,
-    Response,
-    Robyn,
-    WebSocket,
-    jsonify,
-    serve_file,
-    serve_html,
-    WebSocketConnector,
-)
+from integration_tests.subroutes import di_subrouter, sub_router
+from robyn import Headers, Request, Response, Robyn, WebSocket, WebSocketConnector, jsonify, serve_file, serve_html
 from robyn.authentication import AuthenticationHandler, BearerGetter, Identity
-from robyn.robyn import Headers
+from robyn.robyn import QueryParams, Url
 from robyn.templating import JinjaTemplate
-
-from integration_tests.views import SyncView, AsyncView
-from integration_tests.subroutes import sub_router, di_subrouter
-
+from robyn.types import Body, JSONResponse, Method, PathParams
 
 app = Robyn(__file__)
 websocket = WebSocket(app, "/web_socket")
-
 
 # Creating a new WebSocket app to test json handling + to serve an example to future users of this lib
 # while the original "raw" web_socket is used with benchmark tests
@@ -37,7 +24,6 @@ websocket_di.inject(ROUTER_DEPENDENCY="ROUTER DEPENDENCY")
 
 current_file_path = pathlib.Path(__file__).parent.resolve()
 jinja_template = JinjaTemplate(os.path.join(current_file_path, "templates"))
-
 
 # ===== Websockets =====
 
@@ -74,8 +60,15 @@ async def message(ws: WebSocketConnector, msg: str, global_dependencies) -> str:
     elif state == 1:
         resp = "Whooo??"
     elif state == 2:
+        await ws.async_broadcast(ws.query_params.get("one"))
+        ws.sync_send_to(websocket_id, ws.query_params.get("two"))
         resp = "*chika* *chika* Slim Shady."
-    websocket_state[websocket_id] = (state + 1) % 3
+    elif state == 3:
+        ws.close()
+        # TODO temporary fix to avoid CI failure
+        resp = "Connection closed"
+
+    websocket_state[websocket_id] = (state + 1) % 4
     return resp
 
 
@@ -145,6 +138,9 @@ def global_after_request(response: Response):
 
 @app.get("/sync/global/middlewares")
 def sync_global_middlewares(request: Request):
+    print(request.headers)
+    print(request.headers.get("txt"))
+    print(request.headers["txt"])
     assert "global_before" in request.headers
     assert request.headers.get("global_before") == "global_before_request"
     return "sync global middlewares"
@@ -214,9 +210,17 @@ def sync_middlewares_401():
 app.inject(RouterDependency="Router Dependency")
 
 
-@app.get("/")
-async def hello_world(request):
+@app.get("/", openapi_name="Index")
+async def hello_world(r):
+    """
+    Get hello world
+    """
     return "Hello, world!"
+
+
+@app.get("/trailing")
+def trailing_slash(request):
+    return "Trailing slash test successful!"
 
 
 @app.get("/sync/str")
@@ -522,6 +526,15 @@ async def async_raise():
     raise Exception()
 
 
+# cookie
+@app.get("/cookie")
+def cookie():
+    response = Response(status_code=200, headers=Headers({}), description="test cookies")
+    response.set_cookie(key="fakesession", value="fake-cookie-session-value")
+
+    return response
+
+
 # --- POST ---
 
 # dict
@@ -580,6 +593,12 @@ async def async_json_post(request: Request):
         return type(request.json())
     except ValueError:
         return None
+
+
+@app.post("/sync/request_json/key")
+async def request_json(request: Request):
+    json = request.json()
+    return json["key"]
 
 
 # --- PUT ---
@@ -692,29 +711,6 @@ async def async_body_patch(request: Request):
     return request.body
 
 
-# ===== Views =====
-
-
-@app.view("/sync/view/decorator")
-def sync_decorator_view():
-    def get():
-        return "Hello, world!"
-
-    def post(request: Request):
-        body = request.body
-        return body
-
-
-@app.view("/async/view/decorator")
-def async_decorator_view():
-    async def get():
-        return "Hello, world!"
-
-    async def post(request: Request):
-        body = request.body
-        return body
-
-
 # ==== Exception Handling ====
 
 
@@ -788,7 +784,6 @@ app.add_route("GET", "/async/get/no_dec", async_without_decorator)
 app.add_route("PUT", "/async/put/no_dec", async_without_decorator)
 app.add_route("POST", "/async/post/no_dec", async_without_decorator)
 
-
 # ===== Dependency Injection =====
 
 GLOBAL_DEPENDENCY = "GLOBAL DEPENDENCY"
@@ -808,16 +803,269 @@ def sync_router_di(request, router_dependencies):
     return router_dependencies["ROUTER_DEPENDENCY"]
 
 
+# ===== Split request body =====
+
+
+@app.get("/sync/split_request_untyped/query_params")
+def sync_split_request_untyped_basic(query_params):
+    return query_params.to_dict()
+
+
+@app.get("/async/split_request_untyped/query_params")
+async def async_split_request_untyped_basic(query_params):
+    return query_params.to_dict()
+
+
+@app.get("/sync/split_request_untyped/headers")
+def sync_split_request_untyped_headers(headers):
+    return headers.get("server")
+
+
+@app.get("/async/split_request_untyped/headers")
+async def async_split_request_untyped_headers(headers):
+    return headers.get("server")
+
+
+@app.get("/sync/split_request_untyped/path_params/:id")
+def sync_split_request_untyped_path_params(path_params):
+    return path_params
+
+
+@app.get("/async/split_request_untyped/path_params/:id")
+async def async_split_request_untyped_path_params(path_params):
+    return path_params
+
+
+@app.get("/sync/split_request_untyped/method")
+def sync_split_request_untyped_method(method):
+    return method
+
+
+@app.get("/async/split_request_untyped/method")
+async def async_split_request_untyped_method(method):
+    return method
+
+
+@app.post("/sync/split_request_untyped/body")
+def sync_split_request_untyped_body(body):
+    return body
+
+
+@app.post("/async/split_request_untyped/body")
+async def async_split_request_untyped_body(body):
+    return body
+
+
+@app.post("/sync/split_request_untyped/combined")
+def sync_split_request_untyped_combined(body, query_params, method, url, headers):
+    return {
+        "body": body,
+        "query_params": query_params.to_dict(),
+        "method": method,
+        "url": url.path,
+        "headers": headers.get("server"),
+    }
+
+
+@app.post("/async/split_request_untyped/combined")
+async def async_split_request_untyped_combined(body, query_params, method, url, headers):
+    return {
+        "body": body,
+        "query_params": query_params.to_dict(),
+        "method": method,
+        "url": url.path,
+        "headers": headers.get("server"),
+    }
+
+
+@app.get("/sync/split_request_typed/query_params")
+def sync_split_request_basic(query_data: QueryParams):
+    return query_data.to_dict()
+
+
+@app.get("/async/split_request_typed/query_params")
+async def async_split_request_basic(query_data: QueryParams):
+    return query_data.to_dict()
+
+
+@app.get("/sync/split_request_typed/headers")
+def sync_split_request_headers(request_headers: Headers):
+    return request_headers.get("server")
+
+
+@app.get("/async/split_request_typed/headers")
+async def async_split_request_headers(request_headers: Headers):
+    return request_headers.get("server")
+
+
+@app.get("/sync/split_request_typed/path_params/:id")
+def sync_split_request_path_params(path_data: PathParams):
+    return path_data
+
+
+@app.get("/async/split_request_typed/path_params/:id")
+async def async_split_request_path_params(path_data: PathParams):
+    return path_data
+
+
+@app.get("/sync/split_request_typed/method")
+def sync_split_request_method(request_method: Method):
+    return request_method
+
+
+@app.get("/async/split_request_typed/method")
+async def async_split_request_method(request_method: Method):
+    return request_method
+
+
+@app.post("/sync/split_request_typed/body")
+def sync_split_request_body(request_body: Body):
+    return request_body
+
+
+@app.post("/async/split_request_typed/body")
+async def async_split_request_body(request_body: Body):
+    return request_body
+
+
+@app.post("/sync/split_request_typed/combined")
+def sync_split_request_combined(
+    request_body: Body,
+    query_data: QueryParams,
+    request_method: Method,
+    request_url: Url,
+    request_headers: Headers,
+):
+    return {
+        "body": request_body,
+        "query_params": query_data.to_dict(),
+        "method": request_method,
+        "url": request_url.path,
+        "headers": request_headers.get("server"),
+    }
+
+
+@app.post("/async/split_request_typed/combined")
+async def async_split_request_combined(
+    request_body: Body,
+    query_data: QueryParams,
+    request_method: Method,
+    request_url: Url,
+    request_headers: Headers,
+):
+    return {
+        "body": request_body,
+        "query_params": query_data.to_dict(),
+        "method": request_method,
+        "url": request_url.path,
+        "headers": request_headers.get("server"),
+    }
+
+
+@app.post("/sync/split_request_typed_untyped/combined")
+def sync_split_request_typed_untyped_combined(
+    query_params,
+    request_method: Method,
+    request_body: Body,
+    url: Url,
+    headers: Headers,
+):
+    return {
+        "body": request_body,
+        "query_params": query_params.to_dict(),
+        "method": request_method,
+        "url": url.path,
+        "headers": headers.get("server"),
+    }
+
+
+@app.post("/async/split_request_typed_untyped/combined")
+async def async_split_request_typed_untyped_combined(
+    query_params,
+    request_method: Method,
+    request_body: Body,
+    url: Url,
+    headers: Headers,
+):
+    return {
+        "body": request_body,
+        "query_params": query_params.to_dict(),
+        "method": request_method,
+        "url": url.path,
+        "headers": headers.get("server"),
+    }
+
+
+@app.post("/sync/split_request_typed_untyped/combined/failure")
+def sync_split_request_typed_untyped_combined_failure(query_params, request_method: Method, request_body: Body, url: Url, headers: Headers, vishnu):
+    return {
+        "body": request_body,
+        "query_params": query_params.to_dict(),
+        "method": request_method,
+        "url": url.path,
+        "headers": headers.get("server"),
+        "vishnu": vishnu,
+    }
+
+
+@app.post("/async/split_request_typed_untyped/combined/failure")
+async def async_split_request_typed_untyped_combined_failure(query_params, request_method: Method, request_body: Body, url: Url, headers: Headers, vishnu):
+    return {
+        "body": request_body,
+        "query_params": query_params.to_dict(),
+        "method": request_method,
+        "url": url.path,
+        "headers": headers.get("server"),
+        "vishnu": vishnu,
+    }
+
+
+@app.get("/openapi_test", openapi_tags=["test tag"])
+def sample_openapi_endpoint():
+    """Get openapi"""
+    return 200
+
+
+class Initial(Body):
+    is_present: bool
+    letter: Optional[str]
+
+
+class FullName(Body):
+    first: str
+    second: str
+    initial: Initial
+
+
+class CreateItemBody(Body):
+    name: FullName
+    description: str
+    price: float
+    tax: float
+
+
+class CreateItemResponse(JSONResponse):
+    success: bool
+    items_changed: int
+
+
+class CreateItemQueryParamsParams(QueryParams):
+    required: bool
+
+
+@app.post("/openapi_request_body")
+def create_item(request, body: CreateItemBody, query: CreateItemQueryParamsParams) -> CreateItemResponse:
+    return CreateItemResponse(success=True, items_changed=2)
+
+
 def main():
     app.set_response_header("server", "robyn")
-    app.add_directory(
+    app.serve_directory(
         route="/test_dir",
         directory_path=os.path.join(current_file_path, "build"),
         index_file="index.html",
     )
     app.startup_handler(startup_handler)
-    app.add_view("/sync/view", SyncView)
-    app.add_view("/async/view", AsyncView)
     app.include_router(sub_router)
     app.include_router(di_subrouter)
 
@@ -832,7 +1080,7 @@ def main():
             return None
 
     app.configure_authentication(BasicAuthHandler(token_getter=BearerGetter()))
-    app.start(port=8080)
+    app.start(port=8080, _check_port=False)
 
 
 if __name__ == "__main__":

@@ -1,14 +1,15 @@
 import asyncio
-import webbrowser
-from multiprocess import Process
 import signal
 import sys
-from typing import Dict, List
-from robyn.logger import logger
+import webbrowser
+from typing import Dict, List, Optional
+
+from multiprocess import Process  # type: ignore
 
 from robyn.events import Events
+from robyn.logger import logger
 from robyn.robyn import FunctionInfo, Headers, Server, SocketHeld
-from robyn.router import GlobalMiddleware, RouteMiddleware, Route
+from robyn.router import GlobalMiddleware, Route, RouteMiddleware
 from robyn.types import Directory
 from robyn.ws import WebSocket
 
@@ -26,6 +27,7 @@ def run_processes(
     workers: int,
     processes: int,
     response_headers: Headers,
+    excluded_response_headers_paths: Optional[List[str]],
     open_browser: bool,
 ) -> List[Process]:
     socket = SocketHeld(url, port)
@@ -42,6 +44,7 @@ def run_processes(
         workers,
         processes,
         response_headers,
+        excluded_response_headers_paths,
     )
 
     def terminating_signal_handler(_sig, _frame):
@@ -75,9 +78,10 @@ def init_processpool(
     workers: int,
     processes: int,
     response_headers: Headers,
+    excluded_response_headers_paths: Optional[List[str]],
 ) -> List[Process]:
-    process_pool = []
-    if sys.platform.startswith("win32"):
+    process_pool: List = []
+    if sys.platform.startswith("win32") or processes == 1:
         spawn_process(
             directories,
             request_headers,
@@ -89,6 +93,7 @@ def init_processpool(
             socket,
             workers,
             response_headers,
+            excluded_response_headers_paths,
         )
 
         return process_pool
@@ -108,6 +113,7 @@ def init_processpool(
                 copied_socket,
                 workers,
                 response_headers,
+                excluded_response_headers_paths,
             ),
         )
         process.start()
@@ -143,6 +149,7 @@ def spawn_process(
     socket: SocketHeld,
     workers: int,
     response_headers: Headers,
+    excluded_response_headers_paths: Optional[List[str]],
 ):
     """
     This function is called by the main process handler to create a server runtime.
@@ -172,15 +179,17 @@ def spawn_process(
 
     server.apply_response_headers(response_headers)
 
+    server.set_response_headers_exclude_paths(excluded_response_headers_paths)
+
     for route in routes:
-        route_type, endpoint, function, is_const = route
+        route_type, endpoint, function, is_const, auth_required, openapi_name, openapi_tags = route
         server.add_route(route_type, endpoint, function, is_const)
 
     for middleware_type, middleware_function in global_middlewares:
         server.add_global_middleware(middleware_type, middleware_function)
 
-    for route_type, endpoint, function in route_middlewares:
-        server.add_middleware_route(route_type, endpoint, function)
+    for http_route_type, endpoint, function in route_middlewares:
+        server.add_middleware_route(http_route_type, endpoint, function)
 
     if Events.STARTUP in event_handlers:
         server.add_startup_handler(event_handlers[Events.STARTUP])

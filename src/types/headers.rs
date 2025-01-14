@@ -62,18 +62,15 @@ impl Headers {
         }
     }
 
-    pub fn get(&self, key: String) -> PyResult<String> {
+    pub fn get(&self, key: String) -> Option<String> {
         // return the last value
         match self.headers.get(&key.to_lowercase()) {
             Some(iter) => {
                 let (_, values) = iter.pair();
                 let last_value = values.last().unwrap();
-                Ok(last_value.to_string())
+                Some(last_value.to_string())
             }
-            None => Err(pyo3::exceptions::PyKeyError::new_err(format!(
-                "KeyError: {}",
-                key
-            ))),
+            None => None,
         }
     }
 
@@ -151,7 +148,7 @@ impl Headers {
         self.set(key, value);
     }
 
-    pub fn __getitem__(&self, key: String) -> PyResult<String> {
+    pub fn __getitem__(&self, key: String) -> Option<String> {
         self.get(key)
     }
 }
@@ -159,6 +156,10 @@ impl Headers {
 impl Headers {
     pub fn remove(&mut self, key: &str) {
         self.headers.remove(&key.to_lowercase());
+    }
+
+    pub fn clear(&mut self) {
+        self.headers.clear();
     }
 
     pub fn extend(&mut self, headers: &Headers) {
@@ -174,7 +175,10 @@ impl Headers {
 
         for (key, value) in req_headers {
             let key = key.to_string().to_lowercase();
-            let value = value.to_str().unwrap().to_string();
+            let value = match value.to_str() {
+                Ok(value) => value.to_string(),
+                Err(_) => continue,
+            };
             headers.headers.entry(key).or_default().push(value);
         }
 

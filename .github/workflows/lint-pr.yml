@@ -1,20 +1,29 @@
-name: "Lint PR"
+name: Lint PR
 
 on:
-  pull_request_target:
-    types:
-      - opened
-      - edited
-      - synchronize
+  pull_request:
+    branches: [main]
 
-permissions:
-  pull-requests: read
+
+env:
+  UV_SYSTEM_PYTHON: 1
 
 jobs:
-  main:
-    name: Validate PR title
+  lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: amannn/action-semantic-pull-request@v5
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - uses: actions/checkout@v4
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install dependencies with uv
+      run: |
+        uv pip install ruff isort black
+    - name: Run linters
+      run: |
+        uv run ruff check .
+        uv run isort --check-only --diff .

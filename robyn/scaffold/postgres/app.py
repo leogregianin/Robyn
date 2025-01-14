@@ -1,4 +1,5 @@
 import psycopg2
+
 from robyn import Robyn
 
 DB_NAME = "postgresDB"
@@ -27,4 +28,4 @@ def index():
 
 
 if __name__ == "__main__":
-    app.start(url="0.0.0.0", port=8080)
+    app.start(host="0.0.0.0", port=8080)
