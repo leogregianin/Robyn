@@ -34,18 +34,50 @@ pub enum HttpMethod {
 }
 
 impl HttpMethod {
-    pub fn from_actix_method(method: &actix_web::http::Method) -> Self {
+    pub fn is_supported(method: &actix_web::http::Method) -> bool {
+        matches!(
+            *method,
+            actix_web::http::Method::GET
+                | actix_web::http::Method::POST
+                | actix_web::http::Method::PUT
+                | actix_web::http::Method::DELETE
+                | actix_web::http::Method::PATCH
+                | actix_web::http::Method::HEAD
+                | actix_web::http::Method::OPTIONS
+                | actix_web::http::Method::CONNECT
+                | actix_web::http::Method::TRACE
+        )
+    }
+
+    pub fn from_actix_method(method: &actix_web::http::Method) -> Result<Self, &'static str> {
         match *method {
-            actix_web::http::Method::GET => Self::GET,
-            actix_web::http::Method::POST => Self::POST,
-            actix_web::http::Method::PUT => Self::PUT,
-            actix_web::http::Method::DELETE => Self::DELETE,
-            actix_web::http::Method::PATCH => Self::PATCH,
-            actix_web::http::Method::HEAD => Self::HEAD,
-            actix_web::http::Method::OPTIONS => Self::OPTIONS,
-            actix_web::http::Method::CONNECT => Self::CONNECT,
-            actix_web::http::Method::TRACE => Self::TRACE,
-            _ => panic!("Unsupported HTTP method"),
+            actix_web::http::Method::GET => Ok(Self::GET),
+            actix_web::http::Method::POST => Ok(Self::POST),
+            actix_web::http::Method::PUT => Ok(Self::PUT),
+            actix_web::http::Method::DELETE => Ok(Self::DELETE),
+            actix_web::http::Method::PATCH => Ok(Self::PATCH),
+            actix_web::http::Method::HEAD => Ok(Self::HEAD),
+            actix_web::http::Method::OPTIONS => Ok(Self::OPTIONS),
+            actix_web::http::Method::CONNECT => Ok(Self::CONNECT),
+            actix_web::http::Method::TRACE => Ok(Self::TRACE),
+            _ => Err("Method Not Allowed"),
+        }
+    }
+}
+
+// https://github.com/sparckles/Robyn/pull/987#discussion_r2191722539
+impl std::fmt::Display for HttpMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            HttpMethod::GET => write!(f, "GET"),
+            HttpMethod::POST => write!(f, "POST"),
+            HttpMethod::PUT => write!(f, "PUT"),
+            HttpMethod::DELETE => write!(f, "DELETE"),
+            HttpMethod::PATCH => write!(f, "PATCH"),
+            HttpMethod::HEAD => write!(f, "HEAD"),
+            HttpMethod::OPTIONS => write!(f, "OPTIONS"),
+            HttpMethod::CONNECT => write!(f, "CONNECT"),
+            HttpMethod::TRACE => write!(f, "TRACE"),
         }
     }
 }
@@ -73,7 +105,7 @@ impl Url {
     }
 }
 
-pub fn get_body_from_pyobject(body: &PyAny) -> PyResult<Vec<u8>> {
+pub fn get_body_from_pyobject(body: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
     if let Ok(s) = body.downcast::<PyString>() {
         Ok(s.to_string().into_bytes())
     } else if let Ok(b) = body.downcast::<PyBytes>() {
@@ -84,7 +116,7 @@ pub fn get_body_from_pyobject(body: &PyAny) -> PyResult<Vec<u8>> {
     }
 }
 
-pub fn get_description_from_pyobject(description: &PyAny) -> PyResult<Vec<u8>> {
+pub fn get_description_from_pyobject(description: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
     if let Ok(s) = description.downcast::<PyString>() {
         Ok(s.to_string().into_bytes())
     } else if let Ok(b) = description.downcast::<PyBytes>() {
@@ -96,7 +128,7 @@ pub fn get_description_from_pyobject(description: &PyAny) -> PyResult<Vec<u8>> {
 }
 
 pub fn check_body_type(py: Python, body: &Py<PyAny>) -> PyResult<()> {
-    if body.downcast::<PyString>(py).is_err() && body.downcast::<PyBytes>(py).is_err() {
+    if body.downcast_bound::<PyString>(py).is_err() && body.downcast_bound::<PyBytes>(py).is_err() {
         return Err(PyValueError::new_err(
             "Could not convert specified body to bytes",
         ));
@@ -105,7 +137,7 @@ pub fn check_body_type(py: Python, body: &Py<PyAny>) -> PyResult<()> {
 }
 
 pub fn check_description_type(py: Python, body: &Py<PyAny>) -> PyResult<()> {
-    if body.downcast::<PyString>(py).is_err() && body.downcast::<PyBytes>(py).is_err() {
+    if body.downcast_bound::<PyString>(py).is_err() && body.downcast_bound::<PyBytes>(py).is_err() {
         return Err(PyValueError::new_err(
             "Could not convert specified response description to bytes",
         ));

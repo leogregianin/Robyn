@@ -10,7 +10,7 @@ use crate::types::HttpMethod;
 use anyhow::Context;
 use log::debug;
 use matchit::Router as MatchItRouter;
-use pyo3::types::PyAny;
+use pyo3::{Bound, PyErr, Python};
 
 use anyhow::{Error, Result};
 
@@ -25,29 +25,37 @@ pub struct ConstRouter {
 
 impl Router<Response, HttpMethod> for ConstRouter {
     /// Doesn't allow query params/body/etc as variables cannot be "memoized"/"const"ified
-    fn add_route(
+    fn add_route<'py>(
         &self,
+        _py: Python,
         route_type: &HttpMethod,
         route: &str,
         function: FunctionInfo,
-        event_loop: Option<&PyAny>,
+        event_loop: Option<Bound<'py, pyo3::PyAny>>,
     ) -> Result<(), Error> {
-        let table = self
-            .routes
-            .get(route_type)
-            .context("No relevant map")?
-            .clone();
+        let table = Arc::clone(self.routes.get(route_type).context("No relevant map")?);
 
         let route = route.to_string();
         let event_loop =
             event_loop.context("Event loop must be provided to add a route to the const router")?;
 
-        pyo3_asyncio::tokio::run_until_complete(event_loop, async move {
+        pyo3_async_runtimes::tokio::run_until_complete(event_loop, async move {
             let output = execute_http_function(&Request::default(), &function)
                 .await
                 .unwrap();
             debug!("This is the result of the output {:?}", output);
-            table.write().insert(route, output).unwrap();
+            // Const routes only support standard responses, not streaming
+            match output {
+                crate::types::response::ResponseType::Standard(response) => {
+                    table.write().insert(route, response).unwrap();
+                }
+                crate::types::response::ResponseType::Streaming(_) => {
+                    return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                        "Streaming responses are not supported for const routes",
+                    )
+                    .into());
+                }
+            }
             Ok(())
         })?;
 

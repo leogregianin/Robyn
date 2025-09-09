@@ -11,7 +11,7 @@ use crate::shared_socket::SocketHeld;
 use crate::types::function_info::{FunctionInfo, MiddlewareType};
 use crate::types::headers::Headers;
 use crate::types::request::Request;
-use crate::types::response::Response;
+use crate::types::response::{Response, ResponseType};
 use crate::types::HttpMethod;
 use crate::types::MiddlewareReturn;
 use crate::websockets::start_web_socket;
@@ -29,8 +29,11 @@ use actix_web::*;
 
 // pyO3 module
 use log::{debug, error};
+use once_cell::sync::OnceCell;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::pycell::PyRef;
+use pyo3_async_runtimes::TaskLocals;
 
 const MAX_PAYLOAD_SIZE: &str = "ROBYN_MAX_PAYLOAD_SIZE";
 const DEFAULT_MAX_PAYLOAD_SIZE: usize = 1_000_000; // 1Mb
@@ -79,11 +82,13 @@ impl Server {
 
     pub fn start(
         &mut self,
-        py: Python,
-        socket: &PyCell<SocketHeld>,
+        _py: Python,
+        socket: PyRef<SocketHeld>,
         workers: usize,
     ) -> PyResult<()> {
         pyo3_log::init();
+
+        static TASK_LOCALS: OnceCell<TaskLocals> = OnceCell::new();
 
         if STARTED
             .compare_exchange(false, true, SeqCst, Relaxed)
@@ -93,27 +98,30 @@ impl Server {
             return Ok(());
         }
 
-        let raw_socket = socket.try_borrow_mut()?.get_socket();
+        let raw_socket = socket.get_socket();
 
-        let router = self.router.clone();
-        let const_router = self.const_router.clone();
-        let middleware_router = self.middleware_router.clone();
-        let web_socket_router = self.websocket_router.clone();
-        let global_request_headers = self.global_request_headers.clone();
-        let global_response_headers = self.global_response_headers.clone();
-        let directories = self.directories.clone();
+        let router = Arc::clone(&self.router);
+        let const_router = Arc::clone(&self.const_router);
+        let middleware_router = Arc::clone(&self.middleware_router);
+        let web_socket_router = Arc::clone(&self.websocket_router);
+        let global_request_headers = Arc::clone(&self.global_request_headers);
+        let global_response_headers = Arc::clone(&self.global_response_headers);
+        let directories = Arc::clone(&self.directories);
 
-        let asyncio = py.import("asyncio")?;
+        let asyncio = _py.import("asyncio")?;
         let event_loop = asyncio.call_method0("new_event_loop")?;
-        asyncio.call_method1("set_event_loop", (event_loop,))?;
+        asyncio.call_method1("set_event_loop", (event_loop.clone(),))?;
 
         let startup_handler = self.startup_handler.clone();
         let shutdown_handler = self.shutdown_handler.clone();
 
         let excluded_response_headers_paths = self.excluded_response_headers_paths.clone();
 
-        let task_locals = pyo3_asyncio::TaskLocals::new(event_loop).copy_context(py)?;
-        let task_locals_copy = task_locals.clone();
+        let _ = TASK_LOCALS.get_or_try_init(|| {
+            Python::with_gil(|py| {
+                pyo3_async_runtimes::TaskLocals::new(event_loop.clone().into()).copy_context(py)
+            })
+        });
 
         let max_payload_size = env::var(MAX_PAYLOAD_SIZE)
             .unwrap_or(DEFAULT_MAX_PAYLOAD_SIZE.to_string())
@@ -128,14 +136,15 @@ impl Server {
         thread::spawn(move || {
             actix_web::rt::System::new().block_on(async move {
                 debug!("The number of workers is {}", workers);
-                execute_startup_handler(startup_handler, &task_locals_copy)
+
+                let task_locals = Python::with_gil(|py| TASK_LOCALS.get().unwrap().clone_ref(py));
+                execute_startup_handler(startup_handler, &task_locals)
                     .await
                     .unwrap();
 
                 HttpServer::new(move || {
                     let mut app = App::new();
 
-                    let task_locals = task_locals_copy.clone();
                     let directories = directories.read().unwrap();
 
                     // this loop matches three types of directory serving
@@ -162,28 +171,30 @@ impl Server {
                     }
 
                     app = app
-                        .app_data(web::Data::new(router.clone()))
-                        .app_data(web::Data::new(const_router.clone()))
-                        .app_data(web::Data::new(middleware_router.clone()))
-                        .app_data(web::Data::new(global_request_headers.clone()))
-                        .app_data(web::Data::new(global_response_headers.clone()))
+                        .app_data(web::Data::new(Arc::clone(&router)))
+                        .app_data(web::Data::new(Arc::clone(&const_router)))
+                        .app_data(web::Data::new(Arc::clone(&middleware_router)))
+                        .app_data(web::Data::new(Arc::clone(&global_request_headers)))
+                        .app_data(web::Data::new(Arc::clone(&global_response_headers)))
                         .app_data(web::Data::new(excluded_response_headers_paths.clone()));
 
                     let web_socket_map = web_socket_router.get_web_socket_map();
                     for (elem, value) in (web_socket_map.read()).iter() {
                         let endpoint = elem.clone();
                         let path_params = value.clone();
-                        let task_locals = task_locals.clone();
+                        let endpoint_for_closure = endpoint.clone();
                         app = app.route(
-                            &endpoint.clone(),
+                            &endpoint,
                             web::get().to(move |stream: web::Payload, req: HttpRequest| {
-                                let endpoint_copy = endpoint.clone();
+                                let endpoint_copy = endpoint_for_closure.clone();
+                                let task_locals =
+                                    Python::with_gil(|py| TASK_LOCALS.get().unwrap().clone_ref(py));
                                 start_web_socket(
                                     req,
                                     stream,
                                     path_params.clone(),
-                                    task_locals.clone(),
-                                    endpoint_copy,
+                                    task_locals,
+                                    endpoint_copy.to_string(),
                                 )
                             }),
                         );
@@ -201,7 +212,9 @@ impl Server {
                                   global_response_headers,
                                   response_headers_exclude_paths,
                                   req| {
-                                pyo3_asyncio::tokio::scope_local(task_locals.clone(), async move {
+                                let task_locals =
+                                    Python::with_gil(|py| TASK_LOCALS.get().unwrap().clone_ref(py));
+                                pyo3_async_runtimes::tokio::scope_local(task_locals, async move {
                                     index(
                                         router,
                                         payload,
@@ -228,7 +241,7 @@ impl Server {
             });
         });
 
-        let event_loop = (*event_loop).call_method0("run_forever");
+        let event_loop = event_loop.call_method0("run_forever");
         if event_loop.is_err() {
             debug!("Ctrl c handler");
 
@@ -249,11 +262,14 @@ impl Server {
                 if function.is_async {
                     debug!("Shutdown event handler async");
 
-                    pyo3_asyncio::tokio::run_until_complete(
-                        task_locals.event_loop(py),
-                        pyo3_asyncio::into_future_with_locals(
-                            &task_locals.clone(),
-                            function.handler.as_ref(py).call0()?,
+                    let task_locals =
+                        Python::with_gil(|py| TASK_LOCALS.get().unwrap().clone_ref(py));
+
+                    pyo3_async_runtimes::tokio::run_until_complete(
+                        task_locals.event_loop(_py),
+                        pyo3_async_runtimes::into_future_with_locals(
+                            &task_locals.clone_ref(_py),
+                            function.handler.bind(_py).call0()?,
                         )
                         .unwrap(),
                     )
@@ -322,14 +338,7 @@ impl Server {
         function: FunctionInfo,
         is_const: bool,
     ) {
-        let second_route: String = if route.ends_with('/') {
-            route[0..route.len() - 1].to_string()
-        } else {
-            format!("{}/", route)
-        };
-
-        self._add_route(py, route_type, route, function.clone(), is_const);
-        self._add_route(py, route_type, &second_route, function, is_const);
+        self._add_route(py, route_type, route, &function, is_const);
     }
 
     fn _add_route(
@@ -337,7 +346,7 @@ impl Server {
         py: Python,
         route_type: &HttpMethod,
         route: &str,
-        function: FunctionInfo,
+        function: &FunctionInfo,
         is_const: bool,
     ) {
         debug!("Route added for {:?} {} ", route_type, route);
@@ -345,17 +354,23 @@ impl Server {
         let event_loop = asyncio.call_method0("get_event_loop").unwrap();
 
         if is_const {
-            match self
-                .const_router
-                .add_route(route_type, route, function, Some(event_loop))
-            {
+            match self.const_router.add_route(
+                py,
+                route_type,
+                route,
+                function.clone(),
+                Some(event_loop),
+            ) {
                 Ok(_) => (),
                 Err(e) => {
                     debug!("Error adding const route {}", e);
                 }
             }
         } else {
-            match self.router.add_route(route_type, route, function, None) {
+            match self
+                .router
+                .add_route(py, route_type, route, function.clone(), None)
+            {
                 Ok(_) => (),
                 Err(e) => {
                     debug!("Error adding route {}", e);
@@ -379,14 +394,31 @@ impl Server {
         middleware_type: &MiddlewareType,
         route: &str,
         function: FunctionInfo,
+        http_method: HttpMethod,
     ) {
+        let mut endpoint_prefixed_with_method = http_method.to_string();
+
+        if !route.starts_with('/') {
+            endpoint_prefixed_with_method.push('/');
+        }
+
+        endpoint_prefixed_with_method.push_str(route);
+
         debug!(
             "MiddleWare Route added for {:?} {} ",
-            middleware_type, route
+            middleware_type, &endpoint_prefixed_with_method
         );
-        self.middleware_router
-            .add_route(middleware_type, route, function, None)
-            .unwrap();
+        Python::with_gil(|py| {
+            self.middleware_router
+                .add_route(
+                    py,
+                    middleware_type,
+                    &endpoint_prefixed_with_method,
+                    function,
+                    None,
+                )
+                .unwrap()
+        });
     }
 
     /// Add a new web socket route to the routing tables
@@ -433,8 +465,15 @@ async fn index(
     global_response_headers: web::Data<Arc<Headers>>,
     excluded_response_headers_paths: web::Data<Option<Vec<String>>>,
     req: HttpRequest,
-) -> impl Responder {
+) -> ResponseType {
+    // Check if the HTTP method is supported
+    if !HttpMethod::is_supported(req.method()) {
+        return ResponseType::Standard(Response::method_not_allowed(None));
+    }
+
     let mut request = Request::from_actix_request(&req, payload, &global_request_headers).await;
+
+    let route = format!("{}{}", req.method(), req.uri().path());
 
     // Before middleware
     // Global
@@ -442,7 +481,7 @@ async fn index(
         middleware_router.get_global_middlewares(&MiddlewareType::BeforeRequest);
     // Route specific
     if let Some((function, route_params)) =
-        middleware_router.get_route(&MiddlewareType::BeforeRequest, req.uri().path())
+        middleware_router.get_route(&MiddlewareType::BeforeRequest, &route)
     {
         before_middlewares.push(function);
         request.path_params = route_params;
@@ -452,7 +491,7 @@ async fn index(
             Ok(MiddlewareReturn::Request(r)) => r,
             Ok(MiddlewareReturn::Response(r)) => {
                 // If a before middleware returns a response, we abort the request and return the response
-                return r;
+                return ResponseType::Standard(r);
             }
             Err(e) => {
                 error!(
@@ -460,21 +499,21 @@ async fn index(
                     req.uri().path(),
                     get_traceback(e.downcast_ref::<PyErr>().unwrap())
                 );
-                return Response::internal_server_error(None);
+                return ResponseType::Standard(Response::internal_server_error(None));
             }
         };
     }
 
     // Route execution
-    let mut response = if let Some(res) = const_router.get_route(
-        &HttpMethod::from_actix_method(req.method()),
-        req.uri().path(),
-    ) {
-        res
-    } else if let Some((function, route_params)) = router.get_route(
-        &HttpMethod::from_actix_method(req.method()),
-        req.uri().path(),
-    ) {
+    let http_method = match HttpMethod::from_actix_method(req.method()) {
+        Ok(method) => method,
+        Err(_) => return ResponseType::Standard(Response::method_not_allowed(None)),
+    };
+
+    let mut response = if let Some(res) = const_router.get_route(&http_method, req.uri().path()) {
+        ResponseType::Standard(res)
+    } else if let Some((function, route_params)) = router.get_route(&http_method, req.uri().path())
+    {
         request.path_params = route_params;
         match execute_http_function(&request, &function).await {
             Ok(r) => r,
@@ -485,22 +524,22 @@ async fn index(
                     get_traceback(&e)
                 );
 
-                Response::internal_server_error(None)
+                ResponseType::Standard(Response::internal_server_error(None))
             }
         }
     } else {
-        Response::not_found(None)
+        ResponseType::Standard(Response::not_found(None))
     };
 
     debug!("OG Response : {:?}", response);
 
-    response.headers.extend(&global_response_headers);
+    response.headers_mut().extend(&global_response_headers);
 
     match &excluded_response_headers_paths.get_ref() {
         None => {}
         Some(excluded_response_headers_paths) => {
             if excluded_response_headers_paths.contains(&req.uri().path().to_owned()) {
-                response.headers.clear();
+                response.headers_mut().clear();
             }
         }
     }
@@ -512,32 +551,37 @@ async fn index(
     let mut after_middlewares =
         middleware_router.get_global_middlewares(&MiddlewareType::AfterRequest);
     // Route specific
-    if let Some((function, _)) =
-        middleware_router.get_route(&MiddlewareType::AfterRequest, req.uri().path())
+    if let Some((function, _)) = middleware_router.get_route(&MiddlewareType::AfterRequest, &route)
     {
         after_middlewares.push(function);
     }
     for after_middleware in after_middlewares {
-        response = match execute_middleware_function(&response, &after_middleware).await {
-            Ok(MiddlewareReturn::Request(_)) => {
-                error!("After middleware returned a request");
-                return Response::internal_server_error(Some(&response.headers));
-            }
-            Ok(MiddlewareReturn::Response(r)) => {
-                let response = r;
-
-                debug!("Response returned: {:?}", response);
-                response
-            }
-            Err(e) => {
-                error!(
-                    "Error while executing after middleware function for endpoint `{}`: {}",
-                    req.uri().path(),
-                    get_traceback(e.downcast_ref::<PyErr>().unwrap())
-                );
-                return Response::internal_server_error(Some(&response.headers));
-            }
-        };
+        // Middleware only works with standard responses
+        if let ResponseType::Standard(std_response) = response {
+            response = match execute_middleware_function(&std_response, &after_middleware).await {
+                Ok(MiddlewareReturn::Request(_)) => {
+                    error!("After middleware returned a request");
+                    return ResponseType::Standard(Response::internal_server_error(None));
+                }
+                Ok(MiddlewareReturn::Response(r)) => {
+                    debug!("Response returned: {:?}", r);
+                    ResponseType::Standard(r)
+                }
+                Err(e) => {
+                    error!(
+                        "Error while executing after middleware function for endpoint `{}`: {}",
+                        req.uri().path(),
+                        get_traceback(e.downcast_ref::<PyErr>().unwrap())
+                    );
+                    return ResponseType::Standard(Response::internal_server_error(Some(
+                        &std_response.headers,
+                    )));
+                }
+            };
+        } else {
+            // Skip middleware for streaming responses
+            debug!("Skipping after middleware for streaming response");
+        }
     }
 
     debug!("Response returned: {:?}", response);

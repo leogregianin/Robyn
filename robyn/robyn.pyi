@@ -345,6 +345,7 @@ class Server:
         middleware_type: MiddlewareType,
         route: str,
         function: FunctionInfo,
+        route_type: HttpMethod,
     ) -> None:
         pass
     def add_startup_handler(self, function: FunctionInfo) -> None:
@@ -359,7 +360,7 @@ class Server:
         message_route: FunctionInfo,
     ) -> None:
         pass
-    def start(self, socket: SocketHeld, workers: int) -> None:
+    def start(self, socket: SocketHeld, workers: int, client_timeout: int, keep_alive_timeout: int) -> None:
         pass
 
 class WebSocketConnector:

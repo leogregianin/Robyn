@@ -16,16 +16,44 @@ from robyn.env_populator import load_vars
 from robyn.events import Events
 from robyn.jsonify import jsonify
 from robyn.logger import Colors, logger
+from robyn.mcp import MCPApp
 from robyn.openapi import OpenAPI
 from robyn.processpool import run_processes
 from robyn.reloader import compile_rust_files
-from robyn.responses import html, serve_file, serve_html
+from robyn.responses import SSEMessage, SSEResponse, StreamingResponse, html, serve_file, serve_html
 from robyn.robyn import FunctionInfo, Headers, HttpMethod, Request, Response, WebSocketConnector, get_version
 from robyn.router import MiddlewareRouter, MiddlewareType, Router, WebSocketRouter
 from robyn.types import Directory
 from robyn.ws import WebSocket
 
 __version__ = get_version()
+
+
+def _normalize_endpoint(endpoint: str) -> str:
+    """
+    Normalize an endpoint to ensure consistent routing.
+
+    Rules:
+    - Root "/" remains unchanged
+    - All other endpoints get leading slash added if missing
+    - Trailing slashes are removed from all endpoints except root
+
+    Args:
+        endpoint: The endpoint path to normalize
+
+    Returns:
+        Normalized endpoint path
+    """
+    if endpoint == "/":
+        return "/"
+
+    # Add leading slash if missing
+    if not endpoint.startswith("/"):
+        endpoint = "/" + endpoint
+
+    # Remove trailing slash
+    return endpoint.rstrip("/")
+
 
 config = Config()
 
@@ -79,6 +107,7 @@ class BaseRobyn(ABC):
         self.exception_handler: Optional[Callable] = None
         self.authentication_handler: Optional[AuthenticationHandler] = None
         self.included_routers: List[Router] = []
+        self._mcp_app: Optional[MCPApp] = None
 
     def init_openapi(self, openapi_file_path: Optional[str]) -> None:
         if self.config.disable_openapi:
@@ -131,9 +160,6 @@ class BaseRobyn(ABC):
 
         list_openapi_tags: List[str] = openapi_tags if openapi_tags else []
 
-        if auth_required:
-            self.middleware_router.add_auth_middleware(endpoint)(handler)
-
         if isinstance(route_type, str):
             http_methods = {
                 "GET": HttpMethod.GET,
@@ -146,9 +172,27 @@ class BaseRobyn(ABC):
             }
             route_type = http_methods[route_type]
 
+        if auth_required:
+            self.middleware_router.add_auth_middleware(endpoint, route_type)(handler)
+
+        # Normalize endpoint before adding
+        normalized_endpoint = _normalize_endpoint(endpoint)
+
+        # Check if this exact route (method + normalized_endpoint) already exists
+        route_key = f"{route_type}:{normalized_endpoint}"
+        if not hasattr(self, "_added_routes"):
+            self._added_routes = set()
+
+        if route_key in self._added_routes:
+            # Route already exists, raise an error
+            raise ValueError(f"Route {route_type} {normalized_endpoint} already exists")
+
+        # Add to our tracking set
+        self._added_routes.add(route_key)
+
         add_route_response = self.router.add_route(
             route_type=route_type,
-            endpoint=endpoint,
+            endpoint=normalized_endpoint,
             handler=handler,
             is_const=is_const,
             auth_required=auth_required,
@@ -158,7 +202,7 @@ class BaseRobyn(ABC):
             injected_dependencies=injected_dependencies,
         )
 
-        logger.info("Added route %s %s", route_type, endpoint)
+        logger.info("Added route %s %s", route_type, normalized_endpoint)
 
         return add_route_response
 
@@ -508,19 +552,53 @@ class BaseRobyn(ABC):
         self.authentication_handler = authentication_handler
         self.middleware_router.set_authentication_handler(authentication_handler)
 
+    @property
+    def mcp(self):
+        """
+        Get the MCP (Model Context Protocol) interface for this app.
+
+        Enables registering MCP resources, tools, and prompts that can be accessed
+        by MCP clients like Claude Desktop or other AI applications.
+
+        Returns:
+            MCPApp: MCP interface for registering handlers
+
+        Example:
+            @app.mcp.resource("file://documents", "Documents", "Access to document files")
+            def get_documents(params):
+                return "Document content here"
+
+            @app.mcp.tool("calculate", "Perform calculations", {
+                "type": "object",
+                "properties": {
+                    "expression": {"type": "string", "description": "Math expression to evaluate"}
+                },
+                "required": ["expression"]
+            })
+            def calculate_tool(args):
+                return eval(args["expression"])
+        """
+        if self._mcp_app is None:
+            self._mcp_app = MCPApp(self)
+        return self._mcp_app
+
 
 class Robyn(BaseRobyn):
-    def start(self, host: str = "127.0.0.1", port: int = 8080, _check_port: bool = True):
+    def start(self, host: str = "127.0.0.1", port: int = 8080, _check_port: bool = True, client_timeout: int = 30, keep_alive_timeout: int = 20):
         """
         Starts the server
 
         :param host str: represents the host at which the server is listening
         :param port int: represents the port number at which the server is listening
         :param _check_port bool: represents if the port should be checked if it is already in use
+        :param client_timeout int: timeout for client connections in seconds (default: 30)
+        :param keep_alive_timeout int: timeout for keep-alive connections in seconds (default: 20)
         """
 
         host = os.getenv("ROBYN_HOST", host)
         port = int(os.getenv("ROBYN_PORT", port))
+        client_timeout = int(os.getenv("ROBYN_CLIENT_TIMEOUT", client_timeout))
+        keep_alive_timeout = int(os.getenv("ROBYN_KEEP_ALIVE_TIMEOUT", keep_alive_timeout))
         open_browser = bool(os.getenv("ROBYN_BROWSER_OPEN", self.config.open_browser))
 
         if _check_port:
@@ -556,6 +634,8 @@ class Robyn(BaseRobyn):
             self.response_headers,
             self.excluded_response_headers_paths,
             open_browser,
+            client_timeout,
+            keep_alive_timeout,
         )
 
 
@@ -565,7 +645,16 @@ class SubRouter(BaseRobyn):
         self.prefix = prefix
 
     def __add_prefix(self, endpoint: str):
-        return f"{self.prefix}{endpoint}"
+        # Normalize both prefix and endpoint to ensure consistent routing
+        normalized_prefix = _normalize_endpoint(self.prefix)
+
+        # Handle empty endpoint - should just be the prefix
+        if endpoint == "":
+            return normalized_prefix
+
+        # Normalize the endpoint and combine with prefix
+        normalized_endpoint = _normalize_endpoint(endpoint)
+        return f"{normalized_prefix}{normalized_endpoint}"
 
     def get(self, endpoint: str, const: bool = False, auth_required: bool = False, openapi_name: str = "", openapi_tags: List[str] = ["get"]):
         return super().get(endpoint=self.__add_prefix(endpoint), const=const, auth_required=auth_required, openapi_name=openapi_name, openapi_tags=openapi_tags)
@@ -655,10 +744,14 @@ __all__ = [
     "serve_file",
     "serve_html",
     "html",
+    "StreamingResponse",
+    "SSEResponse",
+    "SSEMessage",
     "ALLOW_CORS",
     "SubRouter",
     "AuthenticationHandler",
     "Headers",
     "WebSocketConnector",
     "WebSocket",
+    "MCPApp",
 ]

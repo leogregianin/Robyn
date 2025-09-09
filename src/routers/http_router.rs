@@ -1,8 +1,8 @@
 use parking_lot::RwLock;
+use pyo3::{Bound, Python};
 use std::collections::HashMap;
 
 use matchit::Router as MatchItRouter;
-use pyo3::types::PyAny;
 
 use anyhow::{Context, Result};
 
@@ -18,12 +18,13 @@ pub struct HttpRouter {
 }
 
 impl Router<(FunctionInfo, HashMap<String, String>), HttpMethod> for HttpRouter {
-    fn add_route(
+    fn add_route<'py>(
         &self,
+        _py: Python,
         route_type: &HttpMethod,
         route: &str,
         function: FunctionInfo,
-        _event_loop: Option<&PyAny>,
+        _event_loop: Option<Bound<'py, pyo3::PyAny>>,
     ) -> Result<()> {
         let table = self.routes.get(route_type).context("No relevant map")?;
 
@@ -41,13 +42,47 @@ impl Router<(FunctionInfo, HashMap<String, String>), HttpMethod> for HttpRouter 
         let table = self.routes.get(route_method)?;
 
         let table_lock = table.read();
-        let res = table_lock.at(route).ok()?;
-        let mut route_params = HashMap::new();
-        for (key, value) in res.params.iter() {
-            route_params.insert(key.to_string(), value.to_string());
+
+        // First try the original route
+        if let Ok(res) = table_lock.at(route) {
+            let mut route_params = HashMap::new();
+            for (key, value) in res.params.iter() {
+                route_params.insert(key.to_string(), value.to_string());
+            }
+
+            let function_info = Python::with_gil(|_| res.value.to_owned());
+            return Some((function_info, route_params));
         }
 
-        Some((res.value.to_owned(), route_params))
+        // If original route fails, try normalized version (add/remove trailing slash)
+        let normalized_route = if route.ends_with('/') && route.len() > 1 {
+            // Remove trailing slash (except for root "/")
+            &route[..route.len() - 1]
+        } else {
+            // Add trailing slash
+            return table_lock.at(&format!("{}/", route)).ok().map(|res| {
+                let mut route_params = HashMap::new();
+                for (key, value) in res.params.iter() {
+                    route_params.insert(key.to_string(), value.to_string());
+                }
+
+                let function_info = Python::with_gil(|_| res.value.to_owned());
+                (function_info, route_params)
+            });
+        };
+
+        // Try the normalized route
+        if let Ok(res) = table_lock.at(normalized_route) {
+            let mut route_params = HashMap::new();
+            for (key, value) in res.params.iter() {
+                route_params.insert(key.to_string(), value.to_string());
+            }
+
+            let function_info = Python::with_gil(|_| res.value.to_owned());
+            return Some((function_info, route_params));
+        }
+
+        None
     }
 }
 
